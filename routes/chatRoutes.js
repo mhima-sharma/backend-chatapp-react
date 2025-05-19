@@ -6,7 +6,7 @@ const authenticate = require('../middlewares/authenticate');
 // 1:1 chat
 router.get('/history', chatController.getChatHistory);
 router.get('/users/:id', chatController.getAllUsers);
-router.get('/unseen/:userId', chatController.getUnseenMessages);
+// router.get('/unseen/:userId', chatController.getUnseenMessages);
 
 // Group chat
 router.post('/create-group', authenticate, chatController.createGroup);

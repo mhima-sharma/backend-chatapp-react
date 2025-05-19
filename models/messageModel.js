@@ -1,6 +1,7 @@
 const db = require('../config/db'); // make sure db connection is set
 
 const createMessage = ({ sender_id, receiver_id, room_id, type, message, file_url }) => {
+  console.log(sender_id,"sender_id")
   return new Promise((resolve, reject) => {
     const sql = `
       INSERT INTO messages (sender_id, receiver_id, room_id, type, message, file_url, is_seen) 

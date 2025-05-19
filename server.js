@@ -7,30 +7,34 @@ const multer = require('multer');
 const path = require('path');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
-const { createMessage, markMessagesAsSeen, getUnseenMessageCounts } = require('./models/messageModel');
-
-
+const {
+  createMessage,
+  markMessagesAsSeen,
+  getUnseenMessageCounts,
+} = require('./models/messageModel');
 
 dotenv.config();
+
 const app = express();
 const server = http.createServer(app);
 const io = socketIO(server, {
   cors: {
     origin: process.env.FRONTEND_URL || '*',
-    methods: ['GET', 'POST']
-  }
+    methods: ['GET', 'POST'],
+  },
 });
-
 
 app.use(cors());
 app.use(express.json());
 
-
-// Serve uploaded files statically from /uploads folder
+// Serve uploaded files statically
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-app.use('/api/chat', chatRoutes); //chat route
-app.use('/api/auth', authRoutes);//auth route
-// Multer setup for file uploads
+
+// Routes
+app.use('/api/chat', chatRoutes);
+app.use('/api/auth', authRoutes);
+
+// Multer config for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/'),
   filename: (req, file, cb) => {
@@ -40,7 +44,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Upload API route to receive files
+// Upload endpoint
 app.post('/api/auth/upload', upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
@@ -49,65 +53,87 @@ app.post('/api/auth/upload', upload.single('file'), (req, res) => {
   res.json({ fileUrl });
 });
 
-let users = {}; // userId -> socketId
+let users = {}; // userId -> socketId mapping
 
 io.on('connection', (socket) => {
   console.log(`🟢 Client connected: ${socket.id}`);
 
+  // Join personal and room channels
   socket.on('join-room', ({ userId, roomId }) => {
     users[userId] = socket.id;
     socket.join(roomId);
-    socket.join(userId); // Join personal room for notifications
+    socket.join(userId); // personal room for notifications
     console.log(`User ${userId} joined room ${roomId}`);
   });
 
-  socket.on('private-message', async ({ fromUserId, toUserId, roomId, type = 'text', message, file_url = null }) => {
+  // Handle private message
+  socket.on(
+    'private-message',
+    async ({ fromUserId, toUserId, roomId, type = 'text', message, file_url = null }) => {
+      try {
+        console.log(fromUserId,"fromUserId__one to one")
+        await createMessage({
+          sender_id: fromUserId,
+          receiver_id: toUserId,
+          room_id: roomId,
+          message,
+          type,
+          file_url,
+          is_group: false,
+        });
+
+        // Notify receiver
+        io.to(toUserId.toString()).emit('new-private-message', {
+          fromUserId,
+          roomId,
+          message,
+          type,
+          file_url,
+        });
+
+        // Update unseen message count
+        const unseenCounts = await getUnseenMessageCounts(toUserId);
+        io.to(toUserId.toString()).emit('unseen-messages', unseenCounts);
+      } catch (error) {
+        console.error('❌ Error saving private message:', error);
+      }
+    }
+  );
+
+  // Handle group message
+ socket.on(
+  'group-message',
+  async ({ fromUserId, roomId, message, type = 'text', file_url = null }) => {
     try {
-      // Save message
+         console.log(fromUserId,"fromUserId")
       await createMessage({
         sender_id: fromUserId,
-        receiver_id: toUserId,
-        room_id: roomId,
-        type,
+        receiver_id: null,   // Group message
+        room_id: roomId,     // 🔴 Use roomId here
         message,
+        type,
         file_url,
+        is_group: true,
       });
 
-      // Send to room
-      io.to(roomId).emit('private-message', {
+      // Emit to all others in the room
+      socket.to(roomId).emit('group-message', {
         fromUserId,
-        toUserId,
         roomId,
-        type,
         message,
+        type,
         file_url,
-        created_at: new Date().toISOString(),
+        timestamp: new Date(),
       });
-
-      // Notify receiver with updated unseen count
-      const unseenCounts = await getUnseenMessageCounts(toUserId);
-      io.to(toUserId.toString()).emit('unseen-messages', unseenCounts);
-
     } catch (error) {
-      console.error('❌ Error saving message:', error);
+      console.error('❌ Error saving group message:', error);
     }
-  });
+  }
+);
 
-  socket.on('mark-as-seen', async ({ senderId, receiverId }) => {
-    try {
-      await markMessagesAsSeen(senderId, receiverId);
-      io.to(senderId.toString()).emit('messages-seen', { by: receiverId });
-
-      // Send updated unseen count to receiver
-      const unseenCounts = await getUnseenMessageCounts(receiverId);
-      io.to(receiverId.toString()).emit('unseen-messages', unseenCounts);
-    } catch (err) {
-      console.error('❌ Error marking messages as seen:', err);
-    }
-  });
-
+  // Disconnect
   socket.on('disconnect', () => {
-    for (let [userId, sockId] of Object.entries(users)) {
+    for (const [userId, sockId] of Object.entries(users)) {
       if (sockId === socket.id) {
         delete users[userId];
         console.log(`🔴 User ${userId} disconnected`);
